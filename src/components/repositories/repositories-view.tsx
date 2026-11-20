@@ -1,5 +1,11 @@
 import { clsx } from "clsx";
-import { ChevronsUpDown, Loader2, Plus, RefreshCw } from "lucide-react";
+import {
+  ChevronsUpDown,
+  Loader2,
+  Plus,
+  RefreshCw,
+  Sparkles,
+} from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useSearchParams } from "react-router-dom";
@@ -54,12 +60,14 @@ export function RepositoriesView({
   const repositories = useRepositoryStore((s) => s.repositories);
   const loaded = useRepositoryStore((s) => s.loaded);
   const fetchAndSyncStale = useRepositoryStore((s) => s.fetchAndSyncStale);
+  const detect = useRepositoryStore((s) => s.detect);
   const syncAll = useRepositoryStore((s) => s.syncAll);
   const progress = useRepositoryStore((s) => s.syncAllProgress);
   const focusId = searchParams.get("repo");
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState<Filter>("all");
   const [adding, setAdding] = useState(false);
+  const [detecting, setDetecting] = useState(false);
   // The toolbar's choice for every card; until it is made, cards open only
   // where there is one thing to look at.
   const [allExpanded, setAllExpanded] = useState<boolean | null>(null);
@@ -101,6 +109,23 @@ export function RepositoriesView({
       );
     } else {
       toast.success(t("syncedCount", { count: outcome.total }));
+    }
+  }
+
+  async function reportDetect() {
+    if (detecting) return;
+    setDetecting(true);
+    try {
+      const count = await detect();
+      if (count > 0) {
+        toast.success(t("detectedCount", { count }));
+      } else {
+        toast.info(t("detectNone"));
+      }
+    } catch (e) {
+      toast.error(humanizeError(e));
+    } finally {
+      setDetecting(false);
     }
   }
 
@@ -156,13 +181,27 @@ export function RepositoriesView({
             </h3>
             <p className="text-sm text-muted-foreground">{t("empty")}</p>
           </div>
-          <button
-            onClick={() => setAdding(true)}
-            className="flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground shadow-sm hover:bg-primary/90"
-          >
-            <Plus size={12} />
-            {t("add")}
-          </button>
+          <div className="flex flex-wrap items-center justify-center gap-2">
+            <button
+              onClick={reportDetect}
+              disabled={detecting}
+              className={clsx(ACTION, "disabled:opacity-50")}
+            >
+              {detecting ? (
+                <Loader2 size={12} className="animate-spin" />
+              ) : (
+                <Sparkles size={12} />
+              )}
+              {detecting ? t("detecting") : t("detect")}
+            </button>
+            <button
+              onClick={() => setAdding(true)}
+              className="flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground shadow-sm hover:bg-primary/90"
+            >
+              <Plus size={12} />
+              {t("add")}
+            </button>
+          </div>
         </div>
       ) : (
         <>
@@ -195,6 +234,18 @@ export function RepositoriesView({
                   className={clsx(progress && "animate-spin")}
                 />
                 {progress ? t("syncAllProgress", progress) : t("syncAll")}
+              </button>
+              <button
+                onClick={reportDetect}
+                disabled={detecting}
+                className={clsx(ACTION, "disabled:opacity-50")}
+              >
+                {detecting ? (
+                  <Loader2 size={12} className="animate-spin" />
+                ) : (
+                  <Sparkles size={12} />
+                )}
+                {detecting ? t("detecting") : t("detect")}
               </button>
               <button onClick={() => setAdding(true)} className={ACTION}>
                 <Plus size={12} />

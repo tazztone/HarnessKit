@@ -57,5 +57,10 @@
   "shownCount": "共 {{total}} 个 skill，显示 {{count}} 个",
   "remove": "取消关注",
   "expandAll": "全部展开",
-  "collapseAll": "全部折叠"
+  "collapseAll": "全部折叠",
+  "detect": "从已安装中检测",
+  "detecting": "检测中...",
+  "detectedCount_one": "从已安装 skill 中检测到 {{count}} 个仓库",
+  "detectedCount_other": "从已安装 skill 中检测到 {{count}} 个仓库",
+  "detectNone": "未在已安装 skill 中发现新仓库"
 }

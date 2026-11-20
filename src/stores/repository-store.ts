@@ -22,6 +22,9 @@ interface RepositoryState {
    *  opening the page: rejects only when the fetch does, and sync failures
    *  show on their repositories. */
   fetchAndSyncStale(): Promise<void>;
+  /** Detect untracked repositories from installed Git-backed skills; if any
+   *  are added, refresh the list and sync stale (newly added) repositories. */
+  detect(): Promise<number>;
   /** Track a repository. Resolves with its id once its first sync has
    *  listed its skills; a repository that cannot be synced is not kept. */
   add(url: string): Promise<string>;
@@ -82,6 +85,14 @@ export const useRepositoryStore = create<RepositoryState>((set, get) => ({
   async fetchAndSyncStale() {
     await get().fetch();
     await get().syncAll(isStale);
+  },
+
+  async detect() {
+    const count = await api.detectRepositories();
+    if (count > 0) {
+      await get().fetchAndSyncStale();
+    }
+    return count;
   },
 
   async add(url) {

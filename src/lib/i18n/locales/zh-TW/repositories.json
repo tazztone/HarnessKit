@@ -57,5 +57,10 @@
   "shownCount": "共 {{total}} 個 skill，顯示 {{count}} 個",
   "remove": "取消追蹤",
   "expandAll": "全部展開",
-  "collapseAll": "全部收合"
+  "collapseAll": "全部收合",
+  "detect": "從已安裝中偵測",
+  "detecting": "偵測中...",
+  "detectedCount_one": "從已安裝 skill 中偵測到 {{count}} 個儲存庫",
+  "detectedCount_other": "從已安裝 skill 中偵測到 {{count}} 個儲存庫",
+  "detectNone": "未在已安裝 skill 中發現新儲存庫"
 }

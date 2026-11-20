@@ -57,5 +57,10 @@
   "shownCount": "{{count}} of {{total}} skills shown",
   "remove": "Unfollow",
   "expandAll": "Expand all",
-  "collapseAll": "Collapse all"
+  "collapseAll": "Collapse all",
+  "detect": "Detect from installed",
+  "detecting": "Detecting...",
+  "detectedCount_one": "Detected {{count}} repository from installed skills",
+  "detectedCount_other": "Detected {{count}} repositories from installed skills",
+  "detectNone": "No new repositories found in installed skills"
 }

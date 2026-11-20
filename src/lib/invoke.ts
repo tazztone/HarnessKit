@@ -342,6 +342,9 @@ export const api = {
   listRepositories(): Promise<RepositoryWithItems[]> {
     return transport("list_repositories");
   },
+  detectRepositories(): Promise<number> {
+    return transport("detect_repositories");
+  },
   addRepository(url: string): Promise<string> {
     return transport("add_repository", { url });
   },

@@ -54,6 +54,7 @@ const repo: RepositoryWithItems = {
 
 const api = vi.hoisted(() => ({
   listRepositories: vi.fn(),
+  detectRepositories: vi.fn(),
   syncRepository: vi.fn(),
   getRepositoryItemContent: vi.fn(),
 }));
@@ -181,5 +182,29 @@ describe("RepositoriesView", () => {
       ]),
     );
     expect(api.syncRepository).toHaveBeenCalledTimes(3);
+  });
+
+  it("detects repositories from installed skills and refreshes stale ones", async () => {
+    api.listRepositories
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        { ...repo, id: "detected-r1", last_synced_at: null },
+      ]);
+    api.detectRepositories.mockResolvedValueOnce(1);
+    api.syncRepository.mockResolvedValue(undefined);
+    renderView();
+
+    const detectBtn = await screen.findByRole("button", {
+      name: "Detect from installed",
+    });
+    await userEvent.click(detectBtn);
+
+    await waitFor(() =>
+      expect(useToastStore.getState().toasts.map((t) => t.message)).toEqual([
+        "Detected 1 repository from installed skills",
+      ]),
+    );
+    expect(api.detectRepositories).toHaveBeenCalledTimes(1);
+    expect(api.syncRepository).toHaveBeenCalledWith("detected-r1");
   });
 });
