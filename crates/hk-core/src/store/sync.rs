@@ -374,10 +374,30 @@ impl Store {
 
         tx.commit()?;
 
-        if !extensions.is_empty() && !self.is_flag_set("repositories_seeded")? {
-            if let Err(e) = self.seed_repositories_from_installed_skills() {
-                eprintln!("[harnesskit] Warning: could not seed repositories — {e}");
-            } else {
+        let cache_root = self.db_path.parent().map(|p| p.join("repos"));
+        let has_cache = cache_root.as_deref().is_some_and(|p| p.exists());
+        if (!extensions.is_empty() || has_cache) && !self.is_flag_set("repositories_seeded")? {
+            let mut added = 0;
+            let mut ok = true;
+            if let Some(ref root) = cache_root {
+                match self.seed_repositories_from_cache(root) {
+                    Ok(n) => added += n,
+                    Err(e) => {
+                        ok = false;
+                        eprintln!(
+                            "[harnesskit] Warning: could not seed repositories from cache — {e}"
+                        );
+                    }
+                }
+            }
+            match self.seed_repositories_from_installed_skills() {
+                Ok(n) => added += n,
+                Err(e) => {
+                    ok = false;
+                    eprintln!("[harnesskit] Warning: could not seed repositories — {e}");
+                }
+            }
+            if ok && (!extensions.is_empty() || added > 0) {
                 let _ = self.set_flag("repositories_seeded");
             }
         }

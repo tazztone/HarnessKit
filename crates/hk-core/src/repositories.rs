@@ -106,11 +106,13 @@ pub fn can_track(url: &str) -> bool {
     new_repository(url).is_ok()
 }
 
-/// Detect and follow untracked repositories from installed Git-backed skills.
-/// Returns the number of newly added repositories.
-pub fn detect_repositories(store: &Mutex<Store>) -> Result<usize, HkError> {
+/// Detect and follow untracked repositories from installed Git-backed skills
+/// and existing checkouts in `cache_root`. Returns the number of newly added
+/// repositories.
+pub fn detect_repositories(store: &Mutex<Store>, cache_root: &Path) -> Result<usize, HkError> {
     let store = store.lock();
-    let count = store.seed_repositories_from_installed_skills()?;
+    let count = store.seed_repositories_from_cache(cache_root)?
+        + store.seed_repositories_from_installed_skills()?;
     store.set_flag("repositories_seeded")?;
     Ok(count)
 }

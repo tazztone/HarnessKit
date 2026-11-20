@@ -22,7 +22,8 @@ pub async fn list_repositories(State(state): State<WebState>) -> Result<Vec<Repo
 }
 
 pub async fn detect_repositories(State(state): State<WebState>) -> Result<usize> {
-    blocking(move || repositories::detect_repositories(&state.store)).await
+    blocking(move || repositories::detect_repositories(&state.store, &repositories::cache_root()))
+        .await
 }
 
 pub async fn add_repository(

@@ -209,6 +209,130 @@ impl Store {
         Ok(added)
     }
 
+    /// Track untracked repositories whose checkouts already exist under
+    /// `cache_root` (`~/.harnesskit/repos/<id>`), preserving each directory's
+    /// `<id>`, populating its local skills into `repository_items` (leaving
+    /// `last_synced_at = NULL` so the UI refreshes from the remote on visit),
+    /// and relinking unattributed installed skills (`install_type IS NULL`)
+    /// back to the recovered repository.
+    pub fn seed_repositories_from_cache(&self, cache_root: &Path) -> Result<usize, HkError> {
+        let Ok(entries) = std::fs::read_dir(cache_root) else {
+            return Ok(0);
+        };
+        let mut seen: std::collections::HashMap<String, String> = self
+            .list_repositories()?
+            .into_iter()
+            .map(|repo| (repo_key(&repo.url), repo.id))
+            .collect();
+        let mut dirs: Vec<PathBuf> = entries
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.is_dir())
+            .collect();
+        dirs.sort();
+
+        let mut added = 0;
+        for dir in dirs {
+            let Some(dir_name) = dir
+                .file_name()
+                .and_then(|n| n.to_str())
+                .filter(|n| !n.is_empty() && !n.starts_with('.'))
+                .map(str::to_string)
+            else {
+                continue;
+            };
+            let Some(url) = read_origin_url(&dir) else {
+                continue;
+            };
+            let Ok(mut repo) = crate::repositories::new_repository(&url) else {
+                continue;
+            };
+            if let Some(local_path) = repo.url.strip_prefix("file://")
+                && !Path::new(local_path).exists()
+            {
+                continue;
+            }
+            let key = repo_key(&repo.url);
+            let skills = crate::manager::scan_repo_skills(&dir);
+            if let Some(existing_id) = seen.get(&key) {
+                if existing_id == &dir_name {
+                    for skill in &skills {
+                        self.conn.execute(
+                            "INSERT OR IGNORE INTO repository_items
+                               (repo_id, item_id, name, description, ignored, is_new)
+                             VALUES (?1, ?2, ?3, ?4, 0, 0)",
+                            params![existing_id, skill.skill_id, skill.name, skill.description],
+                        )?;
+                    }
+                    self.relink_unattributed_skills(&repo.url, &skills)?;
+                }
+                continue;
+            }
+            seen.insert(key, dir_name.clone());
+            repo.id = dir_name;
+            self.insert_repository(&repo)?;
+            for skill in &skills {
+                self.conn.execute(
+                    "INSERT OR IGNORE INTO repository_items
+                       (repo_id, item_id, name, description, ignored, is_new)
+                     VALUES (?1, ?2, ?3, ?4, 0, 0)",
+                    params![repo.id, skill.skill_id, skill.name, skill.description],
+                )?;
+            }
+            self.relink_unattributed_skills(&repo.url, &skills)?;
+            added += 1;
+        }
+        Ok(added)
+    }
+
+    /// Relink unattributed installed skills (`kind = 'skill' AND install_type IS NULL`)
+    /// whose `name` matches `skill.name` or whose skill directory name matches
+    /// `skill.skill_id`. Sets `install_type = 'git'`, `install_url`,
+    /// `install_subpath`, and backfills `pack`.
+    pub fn relink_unattributed_skills(
+        &self,
+        repo_url: &str,
+        skills: &[DiscoveredSkill],
+    ) -> Result<usize, HkError> {
+        if skills.is_empty() {
+            return Ok(0);
+        }
+        let rows: Vec<(String, String, Option<String>)> = self
+            .conn
+            .prepare(
+                "SELECT id, name, source_path FROM extensions
+                 WHERE kind = 'skill' AND install_type IS NULL",
+            )?
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
+            .collect::<Result<_, _>>()?;
+        let pack = crate::scanner::extract_pack_from_url(repo_url);
+        let mut relinked = 0;
+        for (id, ext_name, source_path) in rows {
+            let folder_name = source_path
+                .as_deref()
+                .map(skill_entry_path)
+                .and_then(crate::scanner::skill_entry_name);
+            let matched = skills
+                .iter()
+                .find(|s| !s.skill_id.is_empty() && folder_name.as_deref() == Some(&s.skill_id))
+                .or_else(|| skills.iter().find(|s| s.name == ext_name));
+            let Some(skill) = matched else {
+                continue;
+            };
+            let subpath = (!skill.skill_id.is_empty()).then_some(skill.skill_id.as_str());
+            relinked += self.conn.execute(
+                "UPDATE extensions
+                 SET install_type = 'git',
+                     install_url = ?2,
+                     install_subpath = ?3,
+                     pack = COALESCE(pack, ?4)
+                 WHERE id = ?1 AND install_type IS NULL",
+                params![id, repo_url, subpath, pack],
+            )?;
+        }
+        Ok(relinked)
+    }
+
     pub fn is_flag_set(&self, key: &str) -> Result<bool, HkError> {
         let exists: bool = self.conn.query_row(
             "SELECT EXISTS(SELECT 1 FROM app_state WHERE key = ?1 AND value = '1')",
@@ -238,6 +362,36 @@ fn row_to_repository(row: &rusqlite::Row) -> rusqlite::Result<Repository> {
         last_commit_message: row.get(5)?,
         last_sync_error: row.get(6)?,
     })
+}
+
+/// Read the URL of `[remote "origin"]` (or the first `url = ` entry if no
+/// `[remote "origin"]` header is present) from `<repo_dir>/.git/config`.
+fn read_origin_url(repo_dir: &Path) -> Option<String> {
+    let config = std::fs::read_to_string(repo_dir.join(".git/config")).ok()?;
+    let mut in_origin = false;
+    let mut fallback = None;
+    for line in config.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('[') && trimmed.ends_with(']') {
+            in_origin = trimmed == "[remote \"origin\"]";
+            continue;
+        }
+        if let Some(val) = trimmed.strip_prefix("url") {
+            let val = val.trim_start();
+            if let Some(url) = val.strip_prefix('=') {
+                let url = url.trim();
+                if !url.is_empty() {
+                    if in_origin {
+                        return Some(url.to_string());
+                    }
+                    if fallback.is_none() {
+                        fallback = Some(url.to_string());
+                    }
+                }
+            }
+        }
+    }
+    fallback
 }
 
 fn installed_from(ext: &Extension, key: &str) -> bool {
@@ -439,15 +593,169 @@ mod tests {
         assert!(store.list_repositories().unwrap().is_empty());
 
         // Manual detect re-adds it and returns the newly added count.
+        let cache = _dir.path().join("repos");
         let store_mutex = parking_lot::Mutex::new(store);
         assert_eq!(
-            crate::repositories::detect_repositories(&store_mutex).unwrap(),
+            crate::repositories::detect_repositories(&store_mutex, &cache).unwrap(),
             1
         );
         assert_eq!(
-            crate::repositories::detect_repositories(&store_mutex).unwrap(),
+            crate::repositories::detect_repositories(&store_mutex, &cache).unwrap(),
             0
         );
         assert_eq!(store_mutex.lock().list_repositories().unwrap().len(), 1);
+    }
+
+    fn write_cached_checkout(cache_root: &Path, id: &str, url: &str, skills: &[(&str, &str)]) {
+        let repo_dir = cache_root.join(id);
+        let git_dir = repo_dir.join(".git");
+        std::fs::create_dir_all(&git_dir).unwrap();
+        std::fs::write(
+            git_dir.join("config"),
+            format!("[core]\n\trepositoryformatversion = 0\n[remote \"origin\"]\n\turl = {url}\n"),
+        )
+        .unwrap();
+        for (skill_id, skill_name) in skills {
+            let dir = if skill_id.is_empty() {
+                repo_dir.clone()
+            } else {
+                repo_dir.join("skills").join(skill_id)
+            };
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(
+                dir.join("SKILL.md"),
+                format!("---\nname: {skill_name}\ndescription: {skill_name} desc\n---\n"),
+            )
+            .unwrap();
+        }
+    }
+
+    #[test]
+    fn seeding_from_cache_recovers_orphaned_checkouts_and_relinks_unattributed_skills() {
+        let (store, dir) = test_store();
+        let cache = dir.path().join("repos");
+        std::fs::create_dir_all(&cache).unwrap();
+
+        // 1. Valid checkout with two skills ("pdf" and folder "geo-seo" with name "seo-helper").
+        write_cached_checkout(
+            &cache,
+            "repo-uuid-1",
+            "https://github.com/acme/skills.git",
+            &[("pdf", "pdf"), ("geo-seo", "seo-helper")],
+        );
+        // 2. Duplicate checkout of the same repo under another spelling -> skipped.
+        write_cached_checkout(
+            &cache,
+            "repo-uuid-dup",
+            "https://github.com/Acme/Skills",
+            &[("pdf", "pdf")],
+        );
+        // 3. Invalid remote (contains credentials) -> skipped.
+        write_cached_checkout(
+            &cache,
+            "repo-uuid-bad",
+            "https://user:secret@github.com/acme/private.git",
+            &[("sec", "sec")],
+        );
+        // 4. Dead local file:// remote -> skipped.
+        write_cached_checkout(
+            &cache,
+            "repo-uuid-dead-file",
+            "file:///nonexistent/harnesskit/upstream",
+            &[("ghost", "ghost")],
+        );
+        // 5. Stray lock file -> ignored.
+        std::fs::write(cache.join("repo-uuid-1.lock"), "").unwrap();
+
+        // Unattributed installed skills (as scanned after wiping metadata.db).
+        let mut unattributed_by_name = sample_extension();
+        unattributed_by_name.id = "ext-pdf".into();
+        unattributed_by_name.name = "pdf".into();
+        unattributed_by_name.source_path = Some("/home/u/.claude/skills/pdf/SKILL.md".into());
+        store.insert_extension(&unattributed_by_name).unwrap();
+
+        let mut unattributed_by_folder = sample_extension();
+        unattributed_by_folder.id = "ext-geo".into();
+        unattributed_by_folder.name = "custom-name".into();
+        unattributed_by_folder.source_path = Some("/home/u/.claude/skills/geo-seo/SKILL.md".into());
+        store.insert_extension(&unattributed_by_folder).unwrap();
+
+        // Already-attributed skill with same name from another repo -> must NOT be overwritten.
+        let already_attributed =
+            installed_skill("pdf", "https://github.com/other/pdf-repo", "pdf");
+        store.insert_extension(&already_attributed).unwrap();
+
+        assert_eq!(store.seed_repositories_from_cache(&cache).unwrap(), 1);
+        assert_eq!(store.seed_repositories_from_cache(&cache).unwrap(), 0);
+
+        let listed = store.list_repositories_with_items().unwrap();
+        assert_eq!(listed.len(), 1);
+        let recovered = &listed[0];
+        assert_eq!(recovered.repository.id, "repo-uuid-1");
+        assert_eq!(recovered.repository.name, "acme/skills");
+        assert!(recovered.repository.last_synced_at.is_none());
+
+        let item_ids: Vec<&str> = recovered.items.iter().map(|i| i.item_id.as_str()).collect();
+        assert_eq!(item_ids, ["pdf", "geo-seo"]);
+
+        let pdf_item = recovered.items.iter().find(|i| i.item_id == "pdf").unwrap();
+        assert_eq!(pdf_item.installed.len(), 1);
+        assert_eq!(pdf_item.installed[0].extension_id, "ext-pdf");
+
+        let geo_item = recovered
+            .items
+            .iter()
+            .find(|i| i.item_id == "geo-seo")
+            .unwrap();
+        assert_eq!(geo_item.installed.len(), 1);
+        assert_eq!(geo_item.installed[0].extension_id, "ext-geo");
+
+        let ext_pdf = store.get_extension("ext-pdf").unwrap().unwrap();
+        assert_eq!(ext_pdf.pack.as_deref(), Some("acme/skills"));
+        let meta = ext_pdf.install_meta.unwrap();
+        assert_eq!(meta.install_type, "git");
+        assert_eq!(meta.subpath.as_deref(), Some("pdf"));
+
+        let preserved = store.get_extension(&already_attributed.id).unwrap().unwrap();
+        assert_eq!(
+            preserved.install_meta.unwrap().url.as_deref(),
+            Some("https://github.com/other/pdf-repo")
+        );
+    }
+
+    #[test]
+    fn first_scan_recovers_cached_repos_and_relinks_unattributed_skills_once() {
+        let (store, dir) = test_store();
+        let cache = dir.path().join("repos");
+        write_cached_checkout(
+            &cache,
+            "cached-id-42",
+            "https://github.com/acme/skills.git",
+            &[("pdf", "pdf")],
+        );
+
+        let mut scanned_skill = sample_extension();
+        scanned_skill.id = "scanned-pdf".into();
+        scanned_skill.name = "pdf".into();
+        scanned_skill.source_path = Some("/home/u/.claude/skills/pdf/SKILL.md".into());
+
+        store
+            .sync_extensions(std::slice::from_ref(&scanned_skill))
+            .unwrap();
+        assert!(store.is_flag_set("repositories_seeded").unwrap());
+
+        let listed = store.list_repositories_with_items().unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].repository.id, "cached-id-42");
+        assert_eq!(listed[0].items.len(), 1);
+        assert_eq!(listed[0].items[0].installed.len(), 1);
+        assert_eq!(listed[0].items[0].installed[0].extension_id, "scanned-pdf");
+
+        // Unfollow; subsequent scan must not re-seed it automatically.
+        store.delete_repository("cached-id-42").unwrap();
+        store
+            .sync_extensions(std::slice::from_ref(&scanned_skill))
+            .unwrap();
+        assert!(store.list_repositories().unwrap().is_empty());
     }
 }
