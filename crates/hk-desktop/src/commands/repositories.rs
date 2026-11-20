@@ -13,6 +13,12 @@ pub fn list_repositories(state: State<AppState>) -> Result<Vec<RepositoryWithIte
 }
 
 #[tauri::command]
+pub async fn detect_repositories(state: State<'_, AppState>) -> Result<usize, HkError> {
+    let store = state.store.clone();
+    blocking(move || repositories::detect_repositories(&store)).await
+}
+
+#[tauri::command]
 pub async fn add_repository(state: State<'_, AppState>, url: String) -> Result<String, HkError> {
     let store = state.store.clone();
     blocking(move || repositories::add_repository(&store, &repositories::cache_root(), &url)).await

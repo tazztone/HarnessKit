@@ -236,6 +236,9 @@ async fn repository_commands_accept_the_frontend_body_shapes() {
     let (_, listed) = post("list_repositories", serde_json::json!({})).await;
     assert_eq!(listed[0]["id"], added.id);
     assert_eq!(listed[0]["items"], serde_json::json!([]));
+    let (status, detected) = post("detect_repositories", serde_json::json!({})).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(detected, serde_json::json!(0));
 
     let ignore =
         serde_json::json!({ "req": { "repo_id": added.id, "item_id": "pdf", "ignored": true } });

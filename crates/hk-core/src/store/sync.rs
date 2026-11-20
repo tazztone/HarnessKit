@@ -373,6 +373,15 @@ impl Store {
         Self::backfill_packs(&tx)?;
 
         tx.commit()?;
+
+        if !extensions.is_empty() && !self.is_flag_set("repositories_seeded")? {
+            if let Err(e) = self.seed_repositories_from_installed_skills() {
+                eprintln!("[harnesskit] Warning: could not seed repositories — {e}");
+            } else {
+                let _ = self.set_flag("repositories_seeded");
+            }
+        }
+
         Ok(())
     }
     /// Sync extensions for a specific agent only — upsert scanned extensions and remove stale ones.

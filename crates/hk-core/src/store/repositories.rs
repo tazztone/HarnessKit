@@ -179,7 +179,7 @@ impl Store {
     /// list is not empty on the first run after an upgrade. Marketplace
     /// installs are left out: they come from repositories the user never
     /// picked as a whole.
-    pub(super) fn seed_repositories_from_installed_skills(&self) -> Result<(), HkError> {
+    pub fn seed_repositories_from_installed_skills(&self) -> Result<usize, HkError> {
         let mut seen: std::collections::HashSet<String> = self
             .list_repositories()?
             .iter()
@@ -196,14 +196,34 @@ impl Store {
             )?
             .query_map([], |row| row.get(0))?
             .collect::<Result<_, _>>()?;
+        let mut added = 0;
         for url in urls {
             let Ok(repo) = crate::repositories::new_repository(&url) else {
                 continue;
             };
             if seen.insert(repo_key(&repo.url)) {
                 self.insert_repository(&repo)?;
+                added += 1;
             }
         }
+        Ok(added)
+    }
+
+    pub fn is_flag_set(&self, key: &str) -> Result<bool, HkError> {
+        let exists: bool = self.conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM app_state WHERE key = ?1 AND value = '1')",
+            params![key],
+            |row| row.get(0),
+        )?;
+        Ok(exists)
+    }
+
+    pub fn set_flag(&self, key: &str) -> Result<(), HkError> {
+        self.conn.execute(
+            "INSERT INTO app_state (key, value) VALUES (?1, '1')
+             ON CONFLICT(key) DO UPDATE SET value = '1'",
+            params![key],
+        )?;
         Ok(())
     }
 }
@@ -375,8 +395,8 @@ mod tests {
         store.insert_extension(&from_marketplace).unwrap();
         store.insert_extension(&sample_extension()).unwrap();
 
-        store.seed_repositories_from_installed_skills().unwrap();
-        store.seed_repositories_from_installed_skills().unwrap();
+        assert_eq!(store.seed_repositories_from_installed_skills().unwrap(), 2);
+        assert_eq!(store.seed_repositories_from_installed_skills().unwrap(), 0);
 
         let names: Vec<String> = store
             .list_repositories()
@@ -385,5 +405,49 @@ mod tests {
             .map(|repo| repo.name)
             .collect();
         assert_eq!(names, ["acme/skills", "someone/eli5"]);
+    }
+
+    #[test]
+    fn first_scan_auto_seeds_git_repositories_once_and_manual_detect_restores_unfollowed() {
+        let (store, _dir) = test_store();
+        assert!(!store.is_flag_set("repositories_seeded").unwrap());
+
+        let mut git_skill = sample_extension();
+        git_skill.id = "git-pdf".into();
+        git_skill.name = "pdf".into();
+        git_skill.source = Source {
+            origin: SourceOrigin::Git,
+            url: Some("https://github.com/acme/skills.git".into()),
+            version: None,
+            commit_hash: Some("deadbeef".into()),
+            from_manifest: false,
+        };
+
+        store
+            .sync_extensions(std::slice::from_ref(&git_skill))
+            .unwrap();
+        assert!(store.is_flag_set("repositories_seeded").unwrap());
+        let repos = store.list_repositories().unwrap();
+        assert_eq!(repos.len(), 1);
+        assert_eq!(repos[0].name, "acme/skills");
+
+        // Unfollow the seeded repository; subsequent scans must not re-add it.
+        store.delete_repository(&repos[0].id).unwrap();
+        store
+            .sync_extensions(std::slice::from_ref(&git_skill))
+            .unwrap();
+        assert!(store.list_repositories().unwrap().is_empty());
+
+        // Manual detect re-adds it and returns the newly added count.
+        let store_mutex = parking_lot::Mutex::new(store);
+        assert_eq!(
+            crate::repositories::detect_repositories(&store_mutex).unwrap(),
+            1
+        );
+        assert_eq!(
+            crate::repositories::detect_repositories(&store_mutex).unwrap(),
+            0
+        );
+        assert_eq!(store_mutex.lock().list_repositories().unwrap().len(), 1);
     }
 }

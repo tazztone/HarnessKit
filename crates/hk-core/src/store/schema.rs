@@ -124,6 +124,9 @@ impl Store {
         if current_version < 10 {
             self.migrate_v10()?;
         }
+        if current_version < 11 {
+            self.migrate_v11()?;
+        }
 
         // Update schema version to latest
         if current_version < LATEST_SCHEMA_VERSION {
@@ -352,6 +355,26 @@ impl Store {
         // The seed is a convenience; a failure must not keep the app from starting.
         if let Err(e) = self.seed_repositories_from_installed_skills() {
             eprintln!("[harnesskit] Migration warning: could not seed repositories — {e}");
+        }
+        Ok(())
+    }
+    /// Schema v11: persistent key-value flags (`app_state`) so one-shot seeding
+    /// runs after the first non-empty scan on a fresh database without
+    /// re-adding repositories a user later unfollows.
+    fn migrate_v11(&self) -> Result<(), HkError> {
+        self.conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS app_state (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );",
+        )?;
+        let has_existing_data: bool = self.conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM extensions) OR EXISTS(SELECT 1 FROM repositories)",
+            [],
+            |row| row.get(0),
+        )?;
+        if has_existing_data {
+            self.set_flag("repositories_seeded")?;
         }
         Ok(())
     }

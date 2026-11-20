@@ -106,6 +106,15 @@ pub fn can_track(url: &str) -> bool {
     new_repository(url).is_ok()
 }
 
+/// Detect and follow untracked repositories from installed Git-backed skills.
+/// Returns the number of newly added repositories.
+pub fn detect_repositories(store: &Mutex<Store>) -> Result<usize, HkError> {
+    let store = store.lock();
+    let count = store.seed_repositories_from_installed_skills()?;
+    store.set_flag("repositories_seeded")?;
+    Ok(count)
+}
+
 /// Start tracking a repository: record it and run its first sync, and return
 /// its id. If that sync fails the repository is not kept, so a mistyped URL
 /// leaves nothing behind.

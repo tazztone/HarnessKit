@@ -21,6 +21,10 @@ pub async fn list_repositories(State(state): State<WebState>) -> Result<Vec<Repo
     blocking(move || state.store.lock().list_repositories_with_items()).await
 }
 
+pub async fn detect_repositories(State(state): State<WebState>) -> Result<usize> {
+    blocking(move || repositories::detect_repositories(&state.store)).await
+}
+
 pub async fn add_repository(
     State(state): State<WebState>,
     Json(body): Json<UrlBody>,

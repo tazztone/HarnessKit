@@ -84,6 +84,7 @@ fn main() {
             commands::update_custom_config_path,
             commands::remove_custom_config_path,
             commands::list_repositories,
+            commands::detect_repositories,
             commands::add_repository,
             commands::sync_repository,
             commands::delete_repository,

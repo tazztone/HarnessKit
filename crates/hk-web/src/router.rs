@@ -251,6 +251,10 @@ pub fn build_router(state: WebState) -> Router {
             post(handlers::repositories::list_repositories),
         )
         .route(
+            "/api/detect_repositories",
+            post(handlers::repositories::detect_repositories),
+        )
+        .route(
             "/api/add_repository",
             post(handlers::repositories::add_repository),
         )
